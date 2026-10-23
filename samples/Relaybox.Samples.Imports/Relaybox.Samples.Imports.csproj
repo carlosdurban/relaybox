@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Relaybox.MongoDb\Relaybox.MongoDb.csproj" />
+    <ProjectReference Include="..\..\src\Relaybox.RabbitMq\Relaybox.RabbitMq.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Relaybox.Samples.Imports.Tests" />
+  </ItemGroup>
+
+</Project>

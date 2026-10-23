@@ -1,0 +1,35 @@
+@api = http://localhost:5080
+@tenant = acme
+
+### Start an import (raises ImportStarted)
+# @name start
+POST {{api}}/imports
+X-Tenant-Id: {{tenant}}
+Content-Type: application/json
+
+{ "fileName": "customers.csv", "expectedRows": 100 }
+
+### Record a batch
+POST {{api}}/imports/{{start.response.body.$.id}}/batches
+X-Tenant-Id: {{tenant}}
+Content-Type: application/json
+
+{ "processedRows": 60, "failedRows": 0 }
+
+### Record the last batch (completes the import and raises ImportCompleted)
+POST {{api}}/imports/{{start.response.body.$.id}}/batches
+X-Tenant-Id: {{tenant}}
+Content-Type: application/json
+
+{ "processedRows": 38, "failedRows": 2 }
+
+### The consumer side: one notification per completed import
+GET {{api}}/notifications
+X-Tenant-Id: {{tenant}}
+
+### Domain rule violation: 422
+POST {{api}}/imports/{{start.response.body.$.id}}/batches
+X-Tenant-Id: {{tenant}}
+Content-Type: application/json
+
+{ "processedRows": 1, "failedRows": 0 }

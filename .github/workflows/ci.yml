@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Restore
+        run: dotnet restore Relaybox.slnx
+
+      - name: Build
+        run: dotnet build Relaybox.slnx --configuration Release --no-restore
+
+      - name: Unit tests
+        run: >
+          dotnet test Relaybox.slnx --configuration Release --no-build
+          --filter "FullyQualifiedName!~IntegrationTests"
+
+      - name: Integration tests (MongoDB replica set + RabbitMQ in Testcontainers)
+        run: dotnet test tests/Relaybox.IntegrationTests --configuration Release --no-build
+
+      - name: Pack
+        run: |
+          VERSION_ARG=""
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then VERSION_ARG="-p:Version=${GITHUB_REF_NAME#v}"; fi
+          dotnet pack Relaybox.slnx --configuration Release --output artifacts $VERSION_ARG
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: artifacts/*.nupkg
+
+      - name: Publish to NuGet
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: dotnet nuget push "artifacts/*.nupkg" --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate

@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>RabbitMQ publisher (with publisher confirms) and tenant-aware consumer for Relaybox.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Relaybox\Relaybox.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="RabbitMQ.Client" Version="7.2.1" />
+  </ItemGroup>
+</Project>

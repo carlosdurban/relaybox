@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/Relaybox.Samples.Imports.Tests/Relaybox.Samples.Imports.Tests.csproj" />
+    <Project Path="samples/Relaybox.Samples.Imports/Relaybox.Samples.Imports.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Relaybox.Abstractions/Relaybox.Abstractions.csproj" />
+    <Project Path="src/Relaybox.MongoDb/Relaybox.MongoDb.csproj" />
+    <Project Path="src/Relaybox.RabbitMq/Relaybox.RabbitMq.csproj" />
+    <Project Path="src/Relaybox/Relaybox.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Relaybox.IntegrationTests/Relaybox.IntegrationTests.csproj" />
+    <Project Path="tests/Relaybox.Tests/Relaybox.Tests.csproj" />
+  </Folder>
+</Solution>

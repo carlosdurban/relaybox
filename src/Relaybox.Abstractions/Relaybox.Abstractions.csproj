@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Contracts for Relaybox: tenants, outbox store, signal sources and publishers.</Description>
+  </PropertyGroup>
+</Project>
