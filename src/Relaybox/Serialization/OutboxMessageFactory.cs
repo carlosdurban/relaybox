@@ -8,10 +8,18 @@ namespace Relaybox.Serialization;
 /// </summary>
 public sealed class OutboxMessageFactory(MessageTypeMap types, IMessageSerializer serializer, TimeProvider time)
 {
-    public OutboxMessage Create(string tenantId, object @event)
+    private static readonly HashSet<string> ReservedHeaders =
+        new([RelayboxHeaders.TenantId, RelayboxHeaders.TraceParent], StringComparer.OrdinalIgnoreCase);
+
+    public OutboxMessage Create(string tenantId, object @event, OutboxMessageOptions? options = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
         ArgumentNullException.ThrowIfNull(@event);
+
+        if (options?.Headers?.Keys.FirstOrDefault(ReservedHeaders.Contains) is { } reserved)
+        {
+            throw new ArgumentException($"Header '{reserved}' is set by Relaybox and cannot be overridden.", nameof(options));
+        }
 
         return new OutboxMessage(
             Id: Guid.NewGuid(),
@@ -20,6 +28,9 @@ public sealed class OutboxMessageFactory(MessageTypeMap types, IMessageSerialize
             Payload: serializer.Serialize(@event),
             OccurredAt: time.GetUtcNow().UtcDateTime,
             Attempts: 0,
-            TraceParent: Activity.Current?.Id);
+            TraceParent: Activity.Current?.Id,
+            Destination: options?.Destination,
+            RoutingKey: options?.RoutingKey,
+            Headers: options?.Headers is { Count: > 0 } headers ? new Dictionary<string, string>(headers) : null);
     }
 }

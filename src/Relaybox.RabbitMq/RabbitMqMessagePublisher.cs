@@ -3,12 +3,15 @@ using System.Diagnostics;
 using System.Text;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
+using RabbitMQ.Client.Exceptions;
 
 namespace Relaybox.RabbitMq;
 
 /// <summary>
 /// Publishes with publisher confirms: <see cref="PublishAsync"/> completes only when the broker has
-/// accepted the message and throws if it nacks or returns it. Channels are pooled, one per concurrent
+/// accepted the message. Refusals of the message itself (nack, return, missing exchange, too large) surface
+/// as <see cref="MessageRejectedException"/>; connection problems as they are. Channels are pooled, one per concurrent
 /// publication, and discarded after any failure.
 /// </summary>
 internal sealed class RabbitMqMessagePublisher(RabbitMqConnection connection, IOptions<RabbitMqOptions> options)
@@ -29,6 +32,18 @@ internal sealed class RabbitMqMessagePublisher(RabbitMqConnection connection, IO
 
         try
         {
+            var headers = new Dictionary<string, object?>();
+            foreach (var (name, value) in message.Headers ?? new Dictionary<string, string>())
+            {
+                headers[name] = value;
+            }
+
+            headers[RelayboxHeaders.TenantId] = message.TenantId;
+            if ((Activity.Current?.Id ?? message.TraceParent) is { } traceParent)
+            {
+                headers[RelayboxHeaders.TraceParent] = traceParent;
+            }
+
             var properties = new BasicProperties
             {
                 MessageId = message.Id.ToString(),
@@ -36,23 +51,30 @@ internal sealed class RabbitMqMessagePublisher(RabbitMqConnection connection, IO
                 ContentType = "application/json",
                 DeliveryMode = DeliveryModes.Persistent,
                 Timestamp = new AmqpTimestamp(new DateTimeOffset(message.OccurredAt, TimeSpan.Zero).ToUnixTimeSeconds()),
-                Headers = new Dictionary<string, object?> { [RelayboxHeaders.TenantId] = message.TenantId },
+                Headers = headers,
             };
 
-            if ((Activity.Current?.Id ?? message.TraceParent) is { } traceParent)
-            {
-                properties.Headers[RelayboxHeaders.TraceParent] = traceParent;
-            }
-
             await channel.BasicPublishAsync(
-                settings.Exchange,
-                settings.RoutingKey(message),
+                message.Destination ?? settings.Exchange,
+                message.RoutingKey ?? settings.RoutingKey(message),
                 settings.Mandatory,
                 properties,
                 Encoding.UTF8.GetBytes(message.Payload),
                 ct);
 
             reusable = true;
+        }
+        catch (PublishException ex)
+        {
+            throw new MessageRejectedException(
+                ex.IsReturn ? "The broker returned the message: no queue is bound for its routing key." : "The broker nacked the message.",
+                isPermanent: false,
+                ex);
+        }
+        catch (OperationInterruptedException ex) when (IsPermanentRejection(ex.ShutdownReason))
+        {
+            throw new MessageRejectedException(
+                $"The broker closed the channel: {ex.ShutdownReason!.ReplyCode} {ex.ShutdownReason.ReplyText}", isPermanent: true, ex);
         }
         finally
         {
@@ -66,6 +88,13 @@ internal sealed class RabbitMqMessagePublisher(RabbitMqConnection connection, IO
             }
         }
     }
+
+    /// <summary>
+    /// The broker closed the channel because of this message: the exchange does not exist (404) or the message
+    /// breaks a limit such as the maximum message size (406). Republishing the same message cannot succeed.
+    /// </summary>
+    private static bool IsPermanentRejection(ShutdownEventArgs? reason) =>
+        reason is { Initiator: ShutdownInitiator.Peer, ReplyCode: Constants.NotFound or Constants.PreconditionFailed };
 
     private async Task<IChannel> RentAsync(RabbitMqOptions settings, CancellationToken ct)
     {

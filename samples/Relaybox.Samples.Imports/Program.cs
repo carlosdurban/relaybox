@@ -29,6 +29,7 @@ builder.Services.AddRelaybox()
     .AddRabbitMqConsumer("imports.notifications");
 
 builder.Services.AddScoped<ImportRepository>();
+builder.Services.AddHealthChecks().AddRelayboxOutbox();
 
 var app = builder.Build();
 
@@ -47,7 +48,10 @@ app.Use(async (context, next) =>
         await Results.Problem(ex.Message, statusCode: StatusCodes.Status409Conflict).ExecuteAsync(context);
     }
 });
-app.UseMiddleware<TenantHeaderMiddleware>();
+app.MapHealthChecks("/health");
+app.UseWhen(
+    context => !context.Request.Path.StartsWithSegments("/health"),
+    tenantScoped => tenantScoped.UseMiddleware<TenantHeaderMiddleware>());
 
 var imports = app.MapGroup("/imports");
 

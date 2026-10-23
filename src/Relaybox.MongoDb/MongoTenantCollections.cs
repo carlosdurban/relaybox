@@ -16,7 +16,7 @@ internal sealed class MongoTenantCollections(
     ILogger<MongoTenantCollections> logger)
 {
     private const int IndexOptionsConflict = 85;
-    private const string OutboxPendingIndex = "relaybox_pending";
+    private const string OutboxClaimIndex = "relaybox_claim";
     private const string OutboxTtlIndex = "relaybox_ttl";
     private const string InboxTtlIndex = "relaybox_ttl";
 
@@ -60,8 +60,8 @@ internal sealed class MongoTenantCollections(
         var outbox = database.GetCollection<OutboxDocument>(settings.OutboxCollectionName);
         var outboxKeys = Builders<OutboxDocument>.IndexKeys;
         await outbox.Indexes.CreateOneAsync(new CreateIndexModel<OutboxDocument>(
-            outboxKeys.Ascending(d => d.ProcessedAt).Ascending(d => d.OccurredAt),
-            new CreateIndexOptions { Name = OutboxPendingIndex }));
+            outboxKeys.Ascending(d => d.Status).Ascending(d => d.OccurredAt),
+            new CreateIndexOptions { Name = OutboxClaimIndex }));
         await CreateTtlIndexAsync(database, outbox, outboxKeys.Ascending(d => d.ProcessedAt), OutboxTtlIndex,
             settings.OutboxRetention);
 

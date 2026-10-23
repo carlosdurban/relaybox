@@ -48,7 +48,7 @@ public sealed class TenantOutboxProcessorTests
         var hasMore = await CreateProcessor().ProcessAsync("acme", CancellationToken.None);
 
         Assert.False(hasMore);
-        var failure = Assert.Single(_store.Failures);
+        var failure = Assert.Single(_store.Retries);
         Assert.Equal(message.Id, failure.Id);
         Assert.Equal(_time.GetUtcNow().UtcDateTime + _options.RetryBaseDelay, failure.RetryAt);
         Assert.Equal(2, _store.Pending("acme").Count);
@@ -70,6 +70,58 @@ public sealed class TenantOutboxProcessorTests
         await processor.ProcessAsync("acme", CancellationToken.None);
 
         Assert.Equal(2, Assert.Single(_publisher.Published).Message.Attempts);
+    }
+
+    [Fact]
+    public async Task A_permanently_rejected_message_is_failed_at_once_and_the_rest_keep_flowing()
+    {
+        var poison = _store.Add("acme", type: "Poison");
+        var next = _store.Add("acme");
+        _publisher.Rejected["Poison"] = true;
+
+        await CreateProcessor().ProcessAsync("acme", CancellationToken.None);
+
+        Assert.Equal(poison.Id, Assert.Single(_store.Failed("acme")).Id);
+        Assert.Contains("MessageRejectedException", _store.ErrorOf("acme", poison.Id));
+        Assert.Equal(next.Id, Assert.Single(_publisher.Published).Message.Id);
+        Assert.Empty(_store.Pending("acme"));
+    }
+
+    [Fact]
+    public async Task A_rejected_message_is_retried_and_failed_after_the_maximum_attempts()
+    {
+        _options.MaxAttempts = 3;
+        var message = _store.Add("acme", type: "Rejected");
+        _publisher.Rejected["Rejected"] = false;
+        var processor = CreateProcessor();
+
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            Assert.Empty(_store.Failed("acme"));
+            await processor.ProcessAsync("acme", CancellationToken.None);
+            _time.Advance(_options.RetryMaxDelay);
+        }
+
+        Assert.Equal(2, _store.Retries.Count);
+        Assert.Equal(message.Id, Assert.Single(_store.Failed("acme")).Id);
+    }
+
+    [Fact]
+    public async Task An_unreachable_broker_never_fails_messages_however_long_it_lasts()
+    {
+        _options.MaxAttempts = 2;
+        _store.Add("acme");
+        _publisher.Down = true;
+        var processor = CreateProcessor();
+
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            await processor.ProcessAsync("acme", CancellationToken.None);
+            _time.Advance(_options.RetryMaxDelay);
+        }
+
+        Assert.Empty(_store.Failed("acme"));
+        Assert.Equal(5, _store.Retries.Count);
     }
 
     [Fact]

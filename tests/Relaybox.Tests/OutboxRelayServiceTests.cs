@@ -72,7 +72,7 @@ public sealed class OutboxRelayServiceTests : IAsyncLifetime
         _publisher.Down = true;
         _store.Add("acme");
         _signals.Signal("acme");
-        await Eventually.TrueAsync(() => _store.Failures.Count == 1);
+        await Eventually.TrueAsync(() => _store.Retries.Count == 1);
 
         _publisher.Down = false;
         await Task.Delay(TimeSpan.FromMilliseconds(250));

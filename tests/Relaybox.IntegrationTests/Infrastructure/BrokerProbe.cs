@@ -19,29 +19,30 @@ public sealed class BrokerProbe : IAsyncDisposable
 
     public ConcurrentQueue<ReceivedMessage> Received { get; } = new();
 
-    public static async Task<BrokerProbe> StartAsync(InfrastructureFixture infrastructure, TestScenario scenario, bool listen = true)
+    /// <summary>Listens to every message published to <paramref name="exchange"/> (default: the scenario's).</summary>
+    public static async Task<BrokerProbe> StartAsync(
+        InfrastructureFixture infrastructure, TestScenario scenario, bool listen = true, string? exchange = null)
     {
         var factory = new ConnectionFactory { Uri = new Uri(infrastructure.RabbitConnectionString) };
         var connection = await factory.CreateConnectionAsync();
         var channel = await connection.CreateChannelAsync();
         var probe = new BrokerProbe(connection, channel);
 
-        await channel.ExchangeDeclareAsync(scenario.Exchange, ExchangeType.Topic, durable: true);
+        exchange ??= scenario.Exchange;
+        await channel.ExchangeDeclareAsync(exchange, ExchangeType.Topic, durable: true);
         if (listen)
         {
             var queue = await channel.QueueDeclareAsync(exclusive: true);
-            await channel.QueueBindAsync(queue.QueueName, scenario.Exchange, "#");
+            await channel.QueueBindAsync(queue.QueueName, exchange, "#");
 
             var consumer = new AsyncEventingBasicConsumer(channel);
             consumer.ReceivedAsync += (_, delivery) =>
             {
-                var headers = delivery.BasicProperties.Headers;
-                var tenant = headers?.TryGetValue(RelayboxHeaders.TenantId, out var value) == true
-                    ? Encoding.UTF8.GetString((byte[])value!)
-                    : null;
+                var headers = (delivery.BasicProperties.Headers ?? new Dictionary<string, object?>())
+                    .ToDictionary(h => h.Key, h => h.Value is byte[] bytes ? Encoding.UTF8.GetString(bytes) : h.Value?.ToString());
                 probe.Received.Enqueue(new ReceivedMessage(
-                    delivery.BasicProperties.MessageId, tenant, delivery.BasicProperties.Type, delivery.RoutingKey,
-                    Encoding.UTF8.GetString(delivery.Body.Span)));
+                    delivery.BasicProperties.MessageId, headers.GetValueOrDefault(RelayboxHeaders.TenantId),
+                    delivery.BasicProperties.Type, delivery.RoutingKey, Encoding.UTF8.GetString(delivery.Body.Span), headers));
                 return Task.CompletedTask;
             };
             await channel.BasicConsumeAsync(queue.QueueName, autoAck: true, consumer);
@@ -89,7 +90,8 @@ public sealed class BrokerProbe : IAsyncDisposable
     }
 }
 
-public sealed record ReceivedMessage(string? MessageId, string? TenantId, string? Type, string RoutingKey, string Body);
+public sealed record ReceivedMessage(
+    string? MessageId, string? TenantId, string? Type, string RoutingKey, string Body, IReadOnlyDictionary<string, string?> Headers);
 
 public static class Eventually
 {

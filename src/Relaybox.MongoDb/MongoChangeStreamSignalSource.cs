@@ -1,8 +1,10 @@
+using System.Diagnostics.Metrics;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using MongoDB.Bson;
 using MongoDB.Driver;
+using Relaybox.Diagnostics;
 
 namespace Relaybox.MongoDb;
 
@@ -17,11 +19,7 @@ namespace Relaybox.MongoDb;
 /// anyway. If the stream cannot resume (history lost, invalid token), it starts from now and signals
 /// every tenant to cover the gap.
 /// </remarks>
-public sealed class MongoChangeStreamSignalSource(
-    IMongoClient client,
-    ITenantRegistry registry,
-    IOptions<MongoRelayboxOptions> options,
-    ILogger<MongoChangeStreamSignalSource> logger) : IOutboxSignalSource
+public sealed class MongoChangeStreamSignalSource : IOutboxSignalSource, IReportsSignalHealth
 {
     private static readonly HashSet<int> ResumeFailureCodes =
     [
@@ -30,17 +28,66 @@ public sealed class MongoChangeStreamSignalSource(
         286, // ChangeStreamHistoryLost
     ];
 
+    private static readonly Meter Meter = new(RelayboxDiagnostics.Name);
+    private static readonly Counter<long> Restarts =
+        Meter.CreateCounter<long>("relaybox.changestream.restarts", "{restart}", "Times the outbox change stream was reopened.");
+
+    private readonly IMongoClient _client;
+    private readonly ITenantRegistry _registry;
+    private readonly IOptions<MongoRelayboxOptions> _options;
+    private readonly ILogger<MongoChangeStreamSignalSource> _logger;
     private BsonDocument? _resumeToken;
     private bool _mayHaveMissedEvents;
+    private int _openings;
+    private volatile bool _connected;
+
+    public MongoChangeStreamSignalSource(
+        IMongoClient client,
+        ITenantRegistry registry,
+        IOptions<MongoRelayboxOptions> options,
+        ILogger<MongoChangeStreamSignalSource> logger)
+    {
+        _client = client;
+        _registry = registry;
+        _options = options;
+        _logger = logger;
+        Meter.CreateObservableGauge("relaybox.changestream.connected", () => _connected ? 1 : 0, "{connected}",
+            "1 while the outbox change stream is open.");
+    }
+
+    public string Name => "MongoDB change stream";
+
+    public bool IsConnected => _connected;
 
     public async IAsyncEnumerable<string> WatchTenantsAsync([EnumeratorCancellation] CancellationToken ct)
     {
-        using var cursor = await OpenAsync(ct);
+        if (Interlocked.Increment(ref _openings) > 1)
+        {
+            Restarts.Add(1);
+        }
 
+        using var cursor = await OpenAsync(ct);
+        _connected = true;
+        try
+        {
+            await foreach (var tenantId in ReadAsync(cursor, ct))
+            {
+                yield return tenantId;
+            }
+        }
+        finally
+        {
+            _connected = false;
+        }
+    }
+
+    private async IAsyncEnumerable<string> ReadAsync(
+        IChangeStreamCursor<BsonDocument> cursor, [EnumeratorCancellation] CancellationToken ct)
+    {
         if (_mayHaveMissedEvents)
         {
             _mayHaveMissedEvents = false;
-            foreach (var tenant in await registry.GetActiveTenantsAsync(ct))
+            foreach (var tenant in await _registry.GetActiveTenantsAsync(ct))
             {
                 yield return tenant.TenantId;
             }
@@ -55,7 +102,7 @@ public sealed class MongoChangeStreamSignalSource(
             }
             catch (MongoCommandException ex) when (ResumeFailureCodes.Contains(ex.Code))
             {
-                logger.LogWarning(ex, "Outbox change stream can no longer resume; it will restart from now");
+                _logger.LogWarning(ex, "Outbox change stream can no longer resume; it will restart from now");
                 ForgetResumeToken();
                 yield break;
             }
@@ -74,10 +121,10 @@ public sealed class MongoChangeStreamSignalSource(
             foreach (var change in cursor.Current)
             {
                 var databaseName = change["ns"]["db"].AsString;
-                var tenant = await registry.FindByDatabaseAsync(databaseName, ct);
+                var tenant = await _registry.FindByDatabaseAsync(databaseName, ct);
                 if (tenant is null)
                 {
-                    logger.LogDebug("Ignoring outbox insert in database {Database}, which is not an active tenant", databaseName);
+                    _logger.LogDebug("Ignoring outbox insert in database {Database}, which is not an active tenant", databaseName);
                     continue;
                 }
 
@@ -96,7 +143,7 @@ public sealed class MongoChangeStreamSignalSource(
         }
         catch (MongoCommandException ex) when (_resumeToken is not null && ResumeFailureCodes.Contains(ex.Code))
         {
-            logger.LogWarning(ex, "Outbox change stream cannot resume from its last position; starting from now");
+            _logger.LogWarning(ex, "Outbox change stream cannot resume from its last position; starting from now");
             ForgetResumeToken();
             return await WatchAsync(ct);
         }
@@ -104,7 +151,7 @@ public sealed class MongoChangeStreamSignalSource(
 
     private Task<IChangeStreamCursor<BsonDocument>> WatchAsync(CancellationToken ct)
     {
-        var settings = options.Value;
+        var settings = _options.Value;
         PipelineDefinition<ChangeStreamDocument<BsonDocument>, BsonDocument> pipeline = new[]
         {
             new BsonDocument("$match", new BsonDocument
@@ -121,8 +168,8 @@ public sealed class MongoChangeStreamSignalSource(
             MaxAwaitTime = settings.ChangeStreamMaxAwaitTime,
         };
 
-        logger.LogInformation("Opening outbox change stream {Position}", _resumeToken is null ? "from now" : "from the last position");
-        return client.WatchAsync(pipeline, watchOptions, ct);
+        _logger.LogInformation("Opening outbox change stream {Position}", _resumeToken is null ? "from now" : "from the last position");
+        return _client.WatchAsync(pipeline, watchOptions, ct);
     }
 
     private void ForgetResumeToken()

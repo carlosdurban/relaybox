@@ -30,6 +30,18 @@ public sealed class OutboxRelayOptions
     /// <summary>Upper bound of the retry delay. Default: 5 minutes.</summary>
     public TimeSpan RetryMaxDelay { get; set; } = TimeSpan.FromMinutes(5);
 
+    /// <summary>
+    /// Attempts after which a message the broker keeps rejecting is marked as failed. Messages are never failed
+    /// because the broker is unreachable: those are retried for as long as the outage lasts. Default: 10.
+    /// </summary>
+    public int MaxAttempts { get; set; } = 10;
+
+    /// <summary>
+    /// How often pending and failed messages are counted per tenant, for metrics and health checks.
+    /// Default: 30 seconds.
+    /// </summary>
+    public TimeSpan StatisticsInterval { get; set; } = TimeSpan.FromSeconds(30);
+
     /// <summary>Delay before restarting a signal source that failed or ended. Default: 5 seconds.</summary>
     public TimeSpan SignalSourceRestartDelay { get; set; } = TimeSpan.FromSeconds(5);
 

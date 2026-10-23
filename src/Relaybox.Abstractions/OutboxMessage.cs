@@ -10,6 +10,9 @@ namespace Relaybox;
 /// <param name="OccurredAt">When the event was added to the outbox (UTC).</param>
 /// <param name="Attempts">Publication attempts so far, including the current one.</param>
 /// <param name="TraceParent">W3C trace context captured when the event was added, if any.</param>
+/// <param name="Destination">Where to publish it (a RabbitMQ exchange); <c>null</c> for the publisher's default.</param>
+/// <param name="RoutingKey">Routing key; <c>null</c> for the publisher's default.</param>
+/// <param name="Headers">Additional headers sent with the message.</param>
 public sealed record OutboxMessage(
     Guid Id,
     string TenantId,
@@ -17,4 +20,20 @@ public sealed record OutboxMessage(
     string Payload,
     DateTime OccurredAt,
     int Attempts,
-    string? TraceParent);
+    string? TraceParent,
+    string? Destination = null,
+    string? RoutingKey = null,
+    IReadOnlyDictionary<string, string>? Headers = null);
+
+/// <summary>Per-message publication settings, given when the event is added to the outbox.</summary>
+public sealed class OutboxMessageOptions
+{
+    /// <summary>Where to publish the message (a RabbitMQ exchange). Default: the publisher's default.</summary>
+    public string? Destination { get; init; }
+
+    /// <summary>Routing key. Default: the publisher's default (for RabbitMQ, the message type name).</summary>
+    public string? RoutingKey { get; init; }
+
+    /// <summary>Additional headers. <c>tenant-id</c> and <c>traceparent</c> are reserved.</summary>
+    public IReadOnlyDictionary<string, string>? Headers { get; init; }
+}

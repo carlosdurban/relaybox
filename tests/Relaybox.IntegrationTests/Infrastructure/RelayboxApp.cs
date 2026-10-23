@@ -68,7 +68,12 @@ public sealed class RelayboxApp : IAsyncDisposable
     public async Task AbortAsync(string tenantId, params object[] events) =>
         await WriteAsync(tenantId, events, commit: false);
 
-    private async Task WriteAsync(string tenantId, object[] events, bool commit)
+    public async Task CommitAsync(string tenantId, object @event, OutboxMessageOptions options) =>
+        await WriteAsync(tenantId, [@event], commit: true, options);
+
+    public IOutboxStore Store => Services.GetRequiredService<IOutboxStore>();
+
+    private async Task WriteAsync(string tenantId, object[] events, bool commit, OutboxMessageOptions? options = null)
     {
         await using var scope = Services.CreateAsyncScope();
         scope.ServiceProvider.GetRequiredService<ITenantContext>().Set(tenantId);
@@ -77,7 +82,14 @@ public sealed class RelayboxApp : IAsyncDisposable
 
         using var session = await client.StartSessionAsync();
         session.StartTransaction();
-        await outbox.AddRangeAsync(session, events);
+        if (options is null)
+        {
+            await outbox.AddRangeAsync(session, events);
+        }
+        else
+        {
+            await outbox.AddAsync(session, events.Single(), options);
+        }
 
         if (commit)
         {

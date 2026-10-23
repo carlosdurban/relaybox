@@ -56,6 +56,8 @@ public sealed class RelayboxBuilder
             .Validate(o => o.MaxMessagesPerTenantPerRound > 0, "MaxMessagesPerTenantPerRound must be positive.")
             .Validate(o => o.LockDuration > TimeSpan.Zero, "LockDuration must be positive.")
             .Validate(o => o.ReconciliationInterval > TimeSpan.Zero, "ReconciliationInterval must be positive.")
+            .Validate(o => o.MaxAttempts > 0, "MaxAttempts must be positive.")
+            .Validate(o => o.StatisticsInterval > TimeSpan.Zero, "StatisticsInterval must be positive.")
             .ValidateOnStart();
         if (configure is not null)
         {
@@ -66,6 +68,8 @@ public sealed class RelayboxBuilder
         Services.TryAddSingleton<TenantOutboxProcessor>();
         Services.TryAddEnumerable(ServiceDescriptor.Singleton<IOutboxSignalSource, PollingSignalSource>());
         Services.AddHostedService<OutboxRelayService>();
+        Services.TryAddSingleton<OutboxStatisticsSampler>();
+        Services.AddHostedService(sp => sp.GetRequiredService<OutboxStatisticsSampler>());
         return this;
     }
 

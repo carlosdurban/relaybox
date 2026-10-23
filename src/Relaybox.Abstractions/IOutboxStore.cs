@@ -1,7 +1,8 @@
 namespace Relaybox;
 
 /// <summary>
-/// Database-specific access to the outbox of each tenant.
+/// Database-specific access to the outbox of each tenant. A message is pending, processed (published)
+/// or failed (given up on; it stays in the outbox until someone requeues or deletes it).
 /// </summary>
 public interface IOutboxStore
 {
@@ -16,7 +17,19 @@ public interface IOutboxStore
     Task MarkProcessedAsync(string tenantId, Guid messageId, CancellationToken ct);
 
     /// <summary>
-    /// Records a failed attempt. The message stays locked until <paramref name="retryAt"/>, which acts as backoff.
+    /// Records a failed attempt. The message stays pending but locked until <paramref name="retryAt"/>,
+    /// which acts as backoff.
     /// </summary>
-    Task MarkFailedAsync(string tenantId, Guid messageId, string error, DateTime retryAt, CancellationToken ct);
+    Task ScheduleRetryAsync(string tenantId, Guid messageId, string error, DateTime retryAt, CancellationToken ct);
+
+    /// <summary>Gives up on the message: it is no longer claimed, and keeps the error for diagnosis.</summary>
+    Task MarkFailedAsync(string tenantId, Guid messageId, string error, CancellationToken ct);
+
+    /// <summary>Pending and failed messages of the tenant, for metrics and health checks.</summary>
+    Task<OutboxStatistics> GetStatisticsAsync(string tenantId, CancellationToken ct);
 }
+
+/// <param name="Pending">Messages waiting to be published.</param>
+/// <param name="Failed">Messages given up on.</param>
+/// <param name="OldestPendingAt">When the oldest pending message was added, if any.</param>
+public sealed record OutboxStatistics(long Pending, long Failed, DateTime? OldestPendingAt);

@@ -33,3 +33,6 @@ X-Tenant-Id: {{tenant}}
 Content-Type: application/json
 
 { "processedRows": 1, "failedRows": 0 }
+
+### Health: Unhealthy if a message waits more than 5 minutes, Degraded if the change stream is down
+GET {{api}}/health

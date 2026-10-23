@@ -26,6 +26,10 @@ public static class RelayboxDiagnostics
     internal static readonly Counter<long> PublishFailures =
         Meter.CreateCounter<long>("relaybox.outbox.publish_failures", "{message}", "Failed publication attempts.");
 
+    internal static readonly Counter<long> MessagesFailed =
+        Meter.CreateCounter<long>("relaybox.outbox.marked_failed", "{message}",
+            "Messages given up on because the broker keeps rejecting them.");
+
     internal static readonly Histogram<double> PublishLatency =
         Meter.CreateHistogram<double>("relaybox.outbox.publish_latency", "s",
             "Time from the event being added to the outbox to its broker confirmation.");

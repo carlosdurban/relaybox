@@ -18,6 +18,7 @@ await session.CommitTransactionAsync(); // both or neither
 
 - **No lost events.** An event is stored if and only if the change that raised it is committed. It stays in the outbox until the broker confirms it (publisher confirms).
 - **At-least-once delivery, exactly-once processing.** A message can be published more than once (e.g. an instance dies between the broker confirmation and marking it as published). The consumer inbox records every message id in the same transaction as the handler's writes, so duplicates are discarded. Relaybox never claims exactly-once *delivery*.
+- **A poison message cannot block the outbox.** An unreachable broker is retried, with backoff, for as long as the outage lasts. A message the broker *rejects* (nack, unroutable) is retried up to `MaxAttempts`, and a permanent rejection (missing exchange, message too large) fails at once. Failed messages leave the queue and stay in the outbox, with their error, until someone acts.
 - **Safe with many replicas.** Every replica can run the relay. Messages are claimed atomically with a lock, so replicas do not publish the same message twice, and a crashed replica's messages are taken over when its lock expires.
 - **Tenant isolation.** Each tenant's outbox and inbox live in its own database. Every message carries a `tenant-id` header, and a message without one goes to the dead letter queue: there is no default tenant.
 - **No global ordering.** Messages of a tenant are published oldest first, but retries and concurrent consumers can reorder them. If order matters per aggregate, include its version in the event and ignore stale ones.
@@ -73,6 +74,17 @@ builder.Services.AddRelaybox()
     .AddRabbitMqConsumer("imports.notifications");   // queue + dead letter queue
 ```
 
+By default, messages go to the configured exchange with their type name as routing key. A message can have its own destination, routing key and headers:
+
+```csharp
+await outbox.AddAsync(session, new InvoiceRequested(...), new OutboxMessageOptions
+{
+    Destination = "billing",                       // RabbitMQ exchange
+    RoutingKey = $"invoices.{tenantId}.requested",
+    Headers = new Dictionary<string, string> { ["priority"] = "high" },
+});
+```
+
 What you implement:
 
 | Interface | Purpose |
@@ -116,11 +128,27 @@ builder.Services.AddOpenTelemetry()
 
 | Instrument | Meaning |
 | --- | --- |
+| `relaybox.outbox.oldest_pending_age` | Age in seconds of the oldest pending message, per tenant. **The metric to alert on.** |
+| `relaybox.outbox.pending` / `relaybox.outbox.failed` | Messages waiting and messages given up on, per tenant (sampled every 30 s). |
 | `relaybox.outbox.published` | Messages confirmed by the broker, per tenant and type. |
 | `relaybox.outbox.publish_latency` | Seconds from the outbox insert to the broker confirmation. |
 | `relaybox.outbox.publish_failures` / `relaybox.outbox.attempts` | Failed attempts, and attempts needed per message. |
+| `relaybox.outbox.marked_failed` | Messages given up on because the broker keeps rejecting them. |
 | `relaybox.relay.tenant_failures` | Relay rounds aborted by an error in a tenant. |
+| `relaybox.changestream.connected` / `relaybox.changestream.restarts` | Change stream state and reopenings. |
 | `relaybox.inbox.consumed` | Inbound messages by outcome: `processed`, `duplicate`, `dead_lettered`, `requeued`. |
+
+### Health checks
+
+```csharp
+builder.Services.AddHealthChecks().AddRelayboxOutbox(o => o.MaxPendingAge = TimeSpan.FromMinutes(5));
+app.MapHealthChecks("/health");
+```
+
+- **Unhealthy**: some tenant has a message pending for longer than `MaxPendingAge`, so events are not reaching consumers.
+- **Degraded**: the change stream is down (reconciliation still publishes, only later), a tenant's outbox cannot be read, or the statistics are stale.
+
+Use it for readiness and alerting, not liveness: restarting the instance does not fix a broker outage.
 
 The trace context is captured when the event is added to the outbox and propagated through the `traceparent` header, so a consumer's span is linked to the request that raised the event. All logs carry `tenantId` and `messageId`.
 
@@ -132,6 +160,8 @@ The integration tests run with Testcontainers against a real MongoDB replica set
 - Three replicas competing for 200 messages publish each one exactly once.
 - A message locked by a dead instance is published when its lock expires.
 - The broker is paused: messages stay pending with backoff and go out when it returns.
+- A message for a missing exchange is failed on its first attempt, and the next one is still published.
+- A message with its own destination, routing key and headers arrives with all of them.
 - The change stream publishes immediately, without waiting for reconciliation.
 - A tenant created after start-up is picked up.
 - A tenant with a broken database does not block the others.
@@ -151,6 +181,8 @@ dotnet test   # requires Docker
 | `OutboxRelayOptions.MaxMessagesPerTenantPerRound` | 100 | Fairness between tenants. |
 | `OutboxRelayOptions.LockDuration` | 2 min | Must be much longer than a publication. |
 | `OutboxRelayOptions.ReconciliationInterval` | 1 min | Safety net next to the change stream. |
+| `OutboxRelayOptions.MaxAttempts` | 10 | Only for messages the broker rejects; an unreachable broker never fails messages. |
+| `OutboxRelayOptions.RetryBaseDelay` / `RetryMaxDelay` | 5 s / 5 min | Exponential backoff between attempts. |
 | `MongoRelayboxOptions.OutboxRetention` / `InboxRetention` | 7 days | TTL indexes; changes are applied to existing indexes. Inbox retention must exceed your longest redelivery window. |
 | `MongoRelayboxOptions.UseChangeStreams` | `true` | Off: reconciliation only. |
 | `RabbitMqOptions.PublishTimeout` | 30 s | An unresponsive broker cannot block the relay. |

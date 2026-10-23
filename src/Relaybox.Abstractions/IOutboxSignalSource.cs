@@ -13,3 +13,14 @@ public interface IOutboxSignalSource
 {
     IAsyncEnumerable<string> WatchTenantsAsync(CancellationToken ct);
 }
+
+/// <summary>
+/// Implemented by signal sources that hold a connection, so health checks can report them.
+/// When such a source is down, messages are still published by reconciliation, only later.
+/// </summary>
+public interface IReportsSignalHealth
+{
+    string Name { get; }
+
+    bool IsConnected { get; }
+}

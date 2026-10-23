@@ -11,6 +11,9 @@ public interface IOutbox
 {
     Task AddAsync(IClientSessionHandle session, object @event, CancellationToken ct = default);
 
+    /// <summary>Adds an event with its own destination, routing key or headers.</summary>
+    Task AddAsync(IClientSessionHandle session, object @event, OutboxMessageOptions options, CancellationToken ct = default);
+
     Task AddRangeAsync(IClientSessionHandle session, IEnumerable<object> events, CancellationToken ct = default);
 }
 
@@ -22,7 +25,17 @@ internal sealed class MongoOutbox(
     public Task AddAsync(IClientSessionHandle session, object @event, CancellationToken ct = default) =>
         AddRangeAsync(session, [@event], ct);
 
-    public async Task AddRangeAsync(IClientSessionHandle session, IEnumerable<object> events, CancellationToken ct = default)
+    public Task AddAsync(IClientSessionHandle session, object @event, OutboxMessageOptions options, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return AddAsync(session, [@event], options, ct);
+    }
+
+    public Task AddRangeAsync(IClientSessionHandle session, IEnumerable<object> events, CancellationToken ct = default) =>
+        AddAsync(session, events, options: null, ct);
+
+    private async Task AddAsync(
+        IClientSessionHandle session, IEnumerable<object> events, OutboxMessageOptions? options, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(events);
@@ -34,7 +47,7 @@ internal sealed class MongoOutbox(
         }
 
         var tenantId = tenantContext.TenantId;
-        var documents = events.Select(e => OutboxDocument.From(messageFactory.Create(tenantId, e))).ToList();
+        var documents = events.Select(e => OutboxDocument.From(messageFactory.Create(tenantId, e, options))).ToList();
         if (documents.Count == 0)
         {
             return;

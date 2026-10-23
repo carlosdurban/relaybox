@@ -12,7 +12,7 @@ internal sealed class InMemoryOutboxStore(TimeProvider time) : IOutboxStore
 
     public HashSet<string> BrokenTenants { get; } = [];
 
-    public List<(Guid Id, DateTime RetryAt, string Error)> Failures { get; } = [];
+    public List<(Guid Id, DateTime RetryAt, string Error)> Retries { get; } = [];
 
     public OutboxMessage Add(string tenantId, string type = "TestEvent", string? ownerTenantId = null)
     {
@@ -30,12 +30,15 @@ internal sealed class InMemoryOutboxStore(TimeProvider time) : IOutboxStore
         }
     }
 
-    public IReadOnlyList<OutboxMessage> Pending(string tenantId)
+    public IReadOnlyList<OutboxMessage> Pending(string tenantId) => WithStatus(tenantId, Status.Pending);
+
+    public IReadOnlyList<OutboxMessage> Failed(string tenantId) => WithStatus(tenantId, Status.Failed);
+
+    public string? ErrorOf(string tenantId, Guid messageId)
     {
         lock (_gate)
         {
-            return _outboxes.GetValueOrDefault(tenantId)?.Where(e => e.ProcessedAt is null).Select(e => e.Message).ToList()
-                ?? [];
+            return Find(tenantId, messageId).Error;
         }
     }
 
@@ -46,7 +49,7 @@ internal sealed class InMemoryOutboxStore(TimeProvider time) : IOutboxStore
         {
             var now = time.GetUtcNow().UtcDateTime;
             var entry = _outboxes.GetValueOrDefault(tenantId)?
-                .Where(e => e.ProcessedAt is null && (e.LockedUntil is null || e.LockedUntil < now))
+                .Where(e => e.Status == Status.Pending && (e.LockedUntil is null || e.LockedUntil < now))
                 .OrderBy(e => e.Message.OccurredAt)
                 .FirstOrDefault();
             if (entry is null)
@@ -64,21 +67,57 @@ internal sealed class InMemoryOutboxStore(TimeProvider time) : IOutboxStore
     {
         lock (_gate)
         {
-            Find(tenantId, messageId).ProcessedAt = time.GetUtcNow().UtcDateTime;
+            Find(tenantId, messageId).Status = Status.Processed;
         }
 
         return Task.CompletedTask;
     }
 
-    public Task MarkFailedAsync(string tenantId, Guid messageId, string error, DateTime retryAt, CancellationToken ct)
+    public Task ScheduleRetryAsync(string tenantId, Guid messageId, string error, DateTime retryAt, CancellationToken ct)
     {
         lock (_gate)
         {
-            Find(tenantId, messageId).LockedUntil = retryAt;
-            Failures.Add((messageId, retryAt, error));
+            var entry = Find(tenantId, messageId);
+            entry.LockedUntil = retryAt;
+            entry.Error = error;
+            Retries.Add((messageId, retryAt, error));
         }
 
         return Task.CompletedTask;
+    }
+
+    public Task MarkFailedAsync(string tenantId, Guid messageId, string error, CancellationToken ct)
+    {
+        lock (_gate)
+        {
+            var entry = Find(tenantId, messageId);
+            entry.Status = Status.Failed;
+            entry.Error = error;
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task<OutboxStatistics> GetStatisticsAsync(string tenantId, CancellationToken ct)
+    {
+        ThrowIfBroken(tenantId);
+        lock (_gate)
+        {
+            var entries = _outboxes.GetValueOrDefault(tenantId) ?? [];
+            var pending = entries.Where(e => e.Status == Status.Pending).ToList();
+            return Task.FromResult(new OutboxStatistics(
+                pending.Count,
+                entries.Count(e => e.Status == Status.Failed),
+                pending.Count > 0 ? pending.Min(e => e.Message.OccurredAt) : null));
+        }
+    }
+
+    private IReadOnlyList<OutboxMessage> WithStatus(string tenantId, Status status)
+    {
+        lock (_gate)
+        {
+            return _outboxes.GetValueOrDefault(tenantId)?.Where(e => e.Status == status).Select(e => e.Message).ToList() ?? [];
+        }
     }
 
     private Entry Find(string tenantId, Guid messageId) => _outboxes[tenantId].Single(e => e.Message.Id == messageId);
@@ -91,11 +130,19 @@ internal sealed class InMemoryOutboxStore(TimeProvider time) : IOutboxStore
         }
     }
 
+    private enum Status
+    {
+        Pending,
+        Processed,
+        Failed,
+    }
+
     private sealed class Entry(OutboxMessage message)
     {
         public OutboxMessage Message { get; set; } = message;
+        public Status Status { get; set; }
         public DateTime? LockedUntil { get; set; }
-        public DateTime? ProcessedAt { get; set; }
+        public string? Error { get; set; }
     }
 }
 
@@ -104,7 +151,11 @@ internal sealed class RecordingPublisher
 {
     public ConcurrentQueue<(OutboxMessage Message, string ScopeTenant)> Published { get; } = new();
 
+    /// <summary>Unreachable broker.</summary>
     public bool Down { get; set; }
+
+    /// <summary>Message types the broker refuses, and whether permanently.</summary>
+    public Dictionary<string, bool> Rejected { get; } = [];
 }
 
 internal sealed class ScopedRecordingPublisher(RecordingPublisher recorder, ITenantContext tenantContext) : IMessagePublisher
@@ -114,6 +165,11 @@ internal sealed class ScopedRecordingPublisher(RecordingPublisher recorder, ITen
         if (recorder.Down)
         {
             throw new IOException("Broker unreachable");
+        }
+
+        if (recorder.Rejected.TryGetValue(message.Type, out var permanent))
+        {
+            throw new MessageRejectedException("Rejected by the broker", permanent);
         }
 
         recorder.Published.Enqueue((message, tenantContext.TenantId));
